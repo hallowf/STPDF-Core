@@ -1,7 +1,9 @@
 class DirMissing(Exception):
     """docstring for CheatsMissing."""
-    pass
+    def __init__(self,*args,**kwargs):
+        Exception.__init__(self,*args,**kwargs)
 
 class OutDirNotEmpty(Exception):
     """docstring"""
-    pass
+    def __init__(self,*args,**kwargs):
+        Exception.__init__(self,*args,**kwargs)
