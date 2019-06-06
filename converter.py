@@ -3,6 +3,8 @@ import os, shutil
 from PIL import Image
 from pytesseract import image_to_osd, Output
 
+from pytesseract.pytesseract import TesseractNotFoundError
+
 class Converter(object):
     """docstring for Converter."""
 
@@ -30,7 +32,7 @@ class Converter(object):
     # checks how many files are there to copy over
     def verify_copy_size(self):
         if self.file_number >= 1000:
-            yield _("Found many file to copy, this might take a while")
+            yield "Found too many files to copy, this is not implemented"
         else:
             for line in self.copy_images():
                 yield line
@@ -49,7 +51,10 @@ class Converter(object):
                     if self.deskew:
                         # TODO: If the images is to be deskewed it could be saved directly
                         # in the des dir and continue the loop
-                        deskew_image(img,destination_dir,file)
+                        try:
+                            self.deskew_image(img,destination_dir,file)
+                        except (Exception,TesseractNotFoundError) as e:
+                            raise e
                     else:
                         self.images[source_path] = img
                     # Check destination and copy files over
@@ -63,7 +68,7 @@ class Converter(object):
                         shutil.copy2(source_path, destination_file)
 
     def deskew_image(self, img, dest, file):
-        dest_path = os.path.join(root, file)
+        dest_path = os.path.join(dest, file)
         rotate = image_to_osd(img, output_type=Output.DICT)["rotate"]
         # This tells it to use the highest quality interpolation algorithm that it has available,
         # and to expand the image to encompass the full rotated size instead of cropping.
@@ -73,10 +78,10 @@ class Converter(object):
 
     def make_pdf(self):
         # Get all image handles
+        image_handles = [self.images[image] for image in self.images]
         if self.split:
             sa = self.split_at
             yield "%s %i" %  (_("Creating multiple PDFs splitting by:"), sa)
-            image_handles = [self.images[image] for image in self.images]
             if len(image_handles) > sa:
                 # Mom's spaghetti ahead
                 image_handles = [image_handles[i * sa:(i + 1) * sa] for i in range((len(image_handles) + sa - 1) // sa)]
