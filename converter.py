@@ -16,6 +16,7 @@
 
 # import the necessary packages
 import os
+import sys
 import shutil
 from PIL import Image
 from pytesseract import image_to_osd, Output
@@ -45,18 +46,19 @@ class Converter(object):
 
     def __del__(self):
         for handle in self.images:
-            self.images[handle].close()
+            if handle:
+                self.images[handle].close()
 
     # checks how many files are there to copy over
     def verify_copy_size(self):
         if self.file_number >= 1000 and self.save_files:
             yield "Found too many files to copy, this is not implemented"
         else:
-            for line in self.copy_images():
+            for line in self.process_images():
                 yield line
 
     # TODO: the images do not need to be copied neither saved if the user only wants a pdf
-    def copy_images(self):
+    def process_images(self):
         yield "%s: %i" % (_("Files Found"), self.file_number)
         for root, __, files in os.walk(self.source, topdown=False):
             for file in files:
@@ -118,16 +120,23 @@ class Converter(object):
                 if len(image_handles) > sa:
                     # Mom's spaghetti ahead
                     image_handles = [image_handles[i * sa:(i + 1) * sa] for i in range((len(image_handles) + sa - 1) // sa)]
-                    for list in image_handles:
-                        first = list[0]
-                        list.pop[0]
+                    for handle_list in image_handles:
+                        first = handle_list[0]
+                        print("first",first)
+                        print("handle_list",type(handle_list))
+                        # QUESTION: Why does .pop break and del not
+                        # handle_list.pop(0)
+                        del handle_list[0]
                         self.counter += 1
                         name = "%i.pdf" % (self.counter)
-                        first.save(name, "PDF", resolution=90.0, save_all=True, append_images=image_handles)
+                        name = os.path.join(self.dest, name)
+                        first.save(name, "PDF", resolution=90.0, save_all=True,
+                                   append_images=handle_list)
             else:
                 yield _("Creating a single pdf")
                 # Remove the first and store it in a variable
                 first = image_handles[0]
                 image_handles.pop(0)
                 # Save the first image as pdf and append the others
-                first.save("1.pdf", "PDF", resolution=90.0, save_all=True, append_images=image_handles)
+                first.save("1.pdf", "PDF", resolution=90.0, save_all=True,
+                           append_images=image_handles)
