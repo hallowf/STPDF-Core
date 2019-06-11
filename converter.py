@@ -122,11 +122,7 @@ class Converter(object):
                     image_handles = [image_handles[i * sa:(i + 1) * sa] for i in range((len(image_handles) + sa - 1) // sa)]
                     for handle_list in image_handles:
                         first = handle_list[0]
-                        print("first",first)
-                        print("handle_list",type(handle_list))
-                        # QUESTION: Why does .pop break and del not
-                        # handle_list.pop(0)
-                        del handle_list[0]
+                        handle_list.pop(0)
                         self.counter += 1
                         name = "%i.pdf" % (self.counter)
                         name = os.path.join(self.dest, name)
