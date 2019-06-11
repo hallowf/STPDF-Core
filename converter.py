@@ -89,6 +89,7 @@ class Converter(object):
                         if not os.path.exists(destination_file):
                             shutil.copy2(source_path, destination_file)
 
+    # BUG: Some images get flipped sideways
     def deskew_image(self, img, dest, file):
         dest_path = os.path.join(dest, file)
         rotate = image_to_osd(img, output_type=Output.DICT)["rotate"]
@@ -104,6 +105,7 @@ class Converter(object):
         if self.save_files:
             img.save(dest_path)
 
+    # BUG: There is an error here somewhere
     def make_pdf(self):
         # Get all image handles
         image_handles = [self.images[image] for image in self.images]
