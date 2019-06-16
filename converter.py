@@ -28,8 +28,6 @@ from multiprocessing import Process, Pipe
 from multiprocessing.connection import Listener, Client
 import gettext
 
-from stpdf.utils import quit_function, exit_after
-
 from pytesseract.pytesseract import TesseractNotFoundError
 
 
