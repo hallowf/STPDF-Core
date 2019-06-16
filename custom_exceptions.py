@@ -25,3 +25,9 @@ class OutDirNotEmpty(Exception):
     """docstring"""
     def __init__(self, *args, **kwargs):
         Exception.__init__(self, *args, **kwargs)
+
+
+class TimedOut(Exception):
+    """docstring"""
+    def __init__(self, *args, **kwargs):
+        Exception.__init__(self, *args, **kwargs)
