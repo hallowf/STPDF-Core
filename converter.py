@@ -24,7 +24,6 @@ import select
 import errno
 from PIL import Image
 from pytesseract import image_to_osd, Output
-from multiprocessing import Process, Pipe
 from multiprocessing.connection import Listener, Client
 import gettext
 
@@ -52,31 +51,31 @@ class Converter(object):
         # Check how many files to copy
         for __, __, files in os.walk(self.source):
             self.file_number += len(files)
-        self.one_percent_files = self.file_number/100
-
-    # checks how many files are there to copy over
-    def verify_copy_size(self):
-        if self.file_number >= 1000 and self.save_files:
-            yield "Found too many files to copy, this is not implemented"
-        else:
-            for line in self.process_images():
-                yield line
-
-
-    # TODO: the images do not need to be copied neither saved if the user only wants a pdf
-    def process_images(self):
-        gettext.install("stpdf-core")
-        yield "Starting image processing"
+        self.one_percent_files = self.file_number / 100
         if self.installed_lang is None:
             gettext.install("stpdf-core")
         else:
             self.installed_lang.install()
-        yield "%s: %i" % ("Files Found", self.file_number)
+
+    # checks how many files are there to copy over
+    def verify_copy_size(self):
+        if self.file_number >= 1000 and self.save_files:
+            yield _("Found too many files to copy, this is not implemented")
+        else:
+            for line in self.process_images():
+                yield line
+
+    # TODO: the images do not need to be copied neither saved if the user only wants a pdf
+    def process_images(self):
+        yield _("Starting image processing")
+        yield "%s: %i" % (_("Files Found"), self.file_number)
         for root, __, files in os.walk(self.source, topdown=False):
             for file in files:
                 self.file_counter += 1
-                if(round(self.file_counter%self.one_percent_files,1) == 0.1):
-                    msg = str(self.file_counter) + " / " + str(self.file_number) + " processed.\n"
+                if(round(self.file_counter % self.one_percent_files, 1) == 0.1):
+                    msg = "%s / %s %s.\n" % (str(self.file_counter),
+                                             str(self.file_number),
+                                             _("processed"))
                     yield msg
                 extension = os.path.splitext(file)[1][1:].upper()
                 source_path = os.path.join(root, file)
@@ -144,7 +143,8 @@ class Converter(object):
                         name = os.path.join(self.dest, "%i.pdf" % self.counter)
                         while os.path.isfile(name):
                             self.counter += 1
-                            name = os.path.join(self.dest, "%i.pdf" % self.counter)                        
+                            name = os.path.join(self.dest,
+                                                "%i.pdf" % self.counter)
                         first.save(name, "PDF", resolution=90.0, save_all=True,
                                    append_images=handle_list)
             else:
