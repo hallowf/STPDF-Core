@@ -18,10 +18,8 @@
 import os
 import sys
 import shutil
-import socket
 import pickle
-import select
-import errno
+import logging
 from PIL import Image
 from pytesseract import image_to_osd, Output
 from multiprocessing.connection import Listener, Client
@@ -40,9 +38,12 @@ class Converter(object):
         self.deskew = kwargs.get("deskew", False)
         self.resolution = kwargs.get("resolution", 90.0)
         self.installed_lang = kwargs.get("lang", None)
+        self.make_pdf = kwargs.get("make_pdf", True)
+        self.save_files = kwargs.get("save_files", False)
+        self.image_paths = []
         self.images = []
         self.counter = 0
-        self.save_files = True
+        self.stop_running = False
         split, at = split
         self.split = split
         self.split_at = at
@@ -56,21 +57,34 @@ class Converter(object):
             gettext.install("stpdf-core")
         else:
             self.installed_lang.install()
+        self.mute_other_loggers()
+
+    def mute_other_loggers(self):
+        logging.getLogger("PIL").setLevel(logging.ERROR)
 
     # checks how many files are there to copy over
     def verify_copy_size(self):
-        if self.file_number >= 1000 and self.save_files:
-            yield _("Found too many files to copy, this is not implemented")
+        if not self.save_files and not self.make_pdf:
+            yield _("Nothing to do, neither save files or make pdf is selected")
         else:
-            for line in self.process_images():
-                yield line
+            if self.file_number >= 600 and self.save_files:
+                yield _("Found too many files to copy, this is not implemented yet")
+            else:
+                for line in self.process_images():
+                    yield line
 
     # TODO: the images do not need to be copied neither saved if the user only wants a pdf
     def process_images(self):
+        known_extensions = ["JPG", "PNG"]
         yield _("Starting image processing")
-        yield "%s: %i" % (_("Files Found"), self.file_number)
+        yield "%s: %i\n" % (_("Files Found"), self.file_number)
         for root, __, files in os.walk(self.source, topdown=False):
+            if self.stop_running:
+                yield _("Converter is stoppping")
+                break
             for file in files:
+                if self.stop_running:
+                    break
                 self.file_counter += 1
                 if(round(self.file_counter % self.one_percent_files, 1) == 0.1):
                     msg = "%s / %s %s.\n" % (str(self.file_counter),
@@ -80,8 +94,10 @@ class Converter(object):
                 extension = os.path.splitext(file)[1][1:].upper()
                 source_path = os.path.join(root, file)
                 destination_dir = self.dest
-                if extension.endswith("PNG") or extension.endswith("JPG"):
+                if extension in known_extensions:
                     # Rotate the images first if deskew is true
+                    if self.stop_running:
+                        break
                     if self.deskew:
                         try:
                             self.deskew_image(source_path, destination_dir, file)
@@ -93,7 +109,7 @@ class Converter(object):
                         except (Exception, TesseractNotFoundError) as e:
                             raise e
                     else:
-                        self.images.append(source_path)
+                        self.image_paths.append(source_path)
                     # Check destination and copy files over
                     if self.save_files:
                         if not os.path.exists(destination_dir):
@@ -104,7 +120,7 @@ class Converter(object):
                         destination_file = os.path.join(destination_dir, file_name)
                         if not os.path.exists(destination_file):
                             shutil.copy2(source_path, destination_file)
-        yield "Done"
+        yield "Processing done"
 
     # BUG: Some images get flipped sideways
     def deskew_image(self, source_path, dest, file):
@@ -119,14 +135,22 @@ class Converter(object):
         # what color the background will be filled with.
         # https://stackoverflow.com/a/17822099
         img = img.rotate(-rotate, resample=Image.BICUBIC, expand=True)
-        self.images.append(source_path)
+        print("image", img)
         if self.save_files:
+            self.image_paths.append(source_path)
             img.save(dest_path)
+        else:
+            img.close()
+            self.images.append(img)
 
-    # BUG: There is an error here somewhere
+    # Function to generate pdf's
     def make_pdf(self):
+        image_handles = None
         # Get all image handles
-        image_handles = [Image.open(image) for image in self.images]
+        if not self.save_files:
+            image_handles = [Image.open(image) for image in self.images]
+        else:
+            image_handles = [Image.open(image) for image in self.image_paths]
         if len(image_handles) == 0:
             yield _("Failed to obtain image handles something went wrong")
         else:
