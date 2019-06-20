@@ -63,7 +63,7 @@ class Converter(object):
         logging.getLogger("PIL").setLevel(logging.ERROR)
 
     # checks how many files are there to copy over
-    def verify_copy_size(self):
+    def preprocess_all(self):
         if not self.save_files and not self.make_pdf:
             yield _("Nothing to do, neither save files or make pdf is selected")
         else:
