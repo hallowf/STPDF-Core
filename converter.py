@@ -41,7 +41,8 @@ class Converter(object):
         self.installed_lang = kwargs.get("lang", None)
         self.m_pdf = kwargs.get("make_pdf", True)
         self.save_files = kwargs.get("save_files", False)
-        self.resize = 10
+        # Resize is working but is not being passed neither by the cli or the gui
+        self.resize = kwargs.get("resize", None)
         self.image_paths = []
         self.images = []
         self.image_handles = None
@@ -77,15 +78,22 @@ class Converter(object):
         logging.getLogger("PIL").setLevel(logging.ERROR)
 
     # checks how many files are there to copy over
-    def preprocess_all(self):
+    def process_all(self):
         if not self.save_files and not self.m_pdf:
             yield _("Nothing to do, neither save files or make pdf is selected")
         else:
-            if self.file_number >= 600 and self.save_files:
-                yield _("Found too many files to copy, this is not implemented yet")
+            if self.file_number >= 100 and self.deskew:
+                yield "%s %i %s" % (_("Found"),
+                                    self.file_number,
+                                    _("files to copy and deskew is true this might take a bit"))
+            if self.file_number >= 600 and self.save_files or self.file_number >= 1000 and self.make_pdf:
+                yield _("Found too many files to handle, this is not implemented yet")
             else:
                 for line in self.gather_images():
                     yield line
+                if self.deskew:
+                    for line in self.deskew_images():
+                        yield line
                 if self.m_pdf:
                     for line in self.make_pdf():
                         yield line
@@ -117,35 +125,64 @@ class Converter(object):
                         break
                     if self.deskew:
                         try:
-                            self.deskew_image(source_path, destination_dir, file)
-                            continue
+                            self.images.append([source_path,
+                                               "%s/%s" % (destination_dir, file)])
                         except (Exception, TesseractNotFoundError) as e:
                             self.stop_running = True
-                            msg = "%s: %s" % (_("Error occurred while deskewing image"), e)
+                            msg = "%s: %s" % (_("Error occurred while opening image"), e)
                             yield msg
                     else:
                         self.image_paths.append(source_path)
         yield _("Gathering done")
 
     # BUG: Some images get flipped sideways
-    def deskew_image(self, source_path, dest, file):
-        dest_path = os.path.join(dest, file)
-        img = Image.open(source_path)
-        rotate = image_to_osd(img, output_type=Output.DICT)["rotate"]
-        # This tells it to use the
-        # highest quality interpolation algorithm that it has available,
-        # and to expand the image to encompass the full rotated size
-        # instead of cropping.
-        # The documentation does not say
-        # what color the background will be filled with.
-        # https://stackoverflow.com/a/17822099
-        img = img.rotate(-rotate, resample=Image.BICUBIC, expand=True)
-        if self.save_files:
-            self.image_paths.append(dest_path)
-            img.save(dest_path)
+    def deskew_images(self):
+        img_sets = [img_set for img_set in self.images]
+        sets_len = len(img_sets)
+        yield _("Deskewing images") + "\n"
+        one_percent = sets_len / 100
+        counter = 0
+        if sets_len > 0:
+            self.images = []
+            # set: [source_path, dest_path]
+            for img_set in img_sets:
+                counter += 1
+                if(round(counter % one_percent, 1) == 0.0):
+                    msg = "%i / %i %s.\n" % (counter,
+                                             sets_len,
+                                             _("deskewed"))
+                    yield msg
+                dest_path = img_set[1]
+                img = Image.open(img_set[0])
+                try:
+                    rotate = image_to_osd(img, output_type=Output.DICT)["rotate"]
+                    # This tells it to use the
+                    # highest quality interpolation algorithm that it has available,
+                    # and to expand the image to encompass the full rotated size
+                    # instead of cropping.
+                    # The documentation does not say
+                    # what color the background will be filled with.
+                    # https://stackoverflow.com/a/17822099
+                    img = img.rotate(-rotate, resample=Image.BICUBIC, expand=True)
+                    if self.save_files:
+                        self.image_paths.append(dest_path)
+                        img.save(dest_path)
+                    else:
+                        self.images.append(img)
+                # sometimes an error can occur with tesseract reading the image
+                # maybe there is not enough text or dpi is not set
+                # this need to be handled
+                except Exception as e:
+                    msg = "%s: %s" % (_("And exception occured while deskewing image"), e)
+                    yield msg
+                    msg = "%s: %s" % (_("This image wont be processed"), img_set[1])
+                    self.image_paths.append(img_set[0])
+                    continue
         else:
-            self.images.append(img)
+            msg = _("Failed to obtain images to deskew")
+            yield msg
 
+    # gets all image handles
     def check_handles(self):
         image_handles = [Image.open(image) for image in self.image_paths]
         PIL_handles = None
@@ -155,7 +192,8 @@ class Converter(object):
             image_handles += PIL_handles
         if len(image_handles) == 0:
             return False
-        return image_handles
+        else:
+            return image_handles
 
     # resizes the images based on a percentage
     def resize_images(self, image_handles):
