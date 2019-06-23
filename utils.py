@@ -16,6 +16,7 @@
 
 import ctypes
 
+
 # https://stackoverflow.com/a/15274929
 def terminate_thread(thread):
     """Terminates a python thread from another thread.
