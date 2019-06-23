@@ -20,6 +20,7 @@ import sys
 import shutil
 import pickle
 import logging
+import locale
 from PIL import Image
 from pytesseract import image_to_osd, Output
 from multiprocessing.connection import Listener, Client
