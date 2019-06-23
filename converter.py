@@ -85,6 +85,9 @@ class Converter(object):
             else:
                 for line in self.gather_images():
                     yield line
+                if self.m_pdf:
+                    for line in self.make_pdf():
+                        yield line
 
     # TODO: the images do not need to be copied neither saved if the user only wants a pdf
     def gather_images(self):
@@ -114,10 +117,6 @@ class Converter(object):
                     if self.deskew:
                         try:
                             self.deskew_image(source_path, destination_dir, file)
-                            # continue because the image handle
-                            # is already in the list
-                            # and if save is true
-                            # it is already saved in the output dir
                             continue
                         except (Exception, TesseractNotFoundError) as e:
                             self.stop_running = True
@@ -125,19 +124,9 @@ class Converter(object):
                             yield msg
                     else:
                         self.image_paths.append(source_path)
-                    # Check destination and copy files over
-                    if self.save_files:
-                        if not os.path.exists(destination_dir):
-                            os.mkdir(destination_dir)
-                        file_name = str(file) + "." + extension.lower()
-                        destination_file = os.path.join(destination_dir, file_name)
-                        if not os.path.exists(destination_file):
-                            shutil.copy2(source_path, destination_file)
         yield _("Gathering done")
 
     # BUG: Some images get flipped sideways
-    # TODO: this is slow probably because of either opening the images,
-    # or processing them trough tesseract
     def deskew_image(self, source_path, dest, file):
         dest_path = os.path.join(dest, file)
         img = Image.open(source_path)
@@ -155,13 +144,12 @@ class Converter(object):
             img.save(dest_path)
         else:
             self.images.append(img)
-        img.close()
 
     def check_handles(self):
         image_handles = [Image.open(image) for image in self.image_paths]
         PIL_handles = None
         if len(self.images) > 0:
-            PIL_handles = [Image.open(image) for image in self.images]
+            PIL_handles = [image for image in self.images]
         if PIL_handles is not None:
             image_handles += PIL_handles
         if len(image_handles) == 0:
