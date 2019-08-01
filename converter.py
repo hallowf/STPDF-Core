@@ -97,6 +97,7 @@ class Converter(object):
                 if self.m_pdf:
                     for line in self.make_pdf():
                         yield line
+                yield _("Converter finished")
 
     # TODO: the images do not need to be copied neither saved if the user only wants a pdf
     def gather_images(self):
@@ -104,12 +105,7 @@ class Converter(object):
         yield _("Starting image gathering") + "\n"
         yield "%s: %i\n" % (_("Files Found"), self.file_number)
         for root, __, files in os.walk(self.source, topdown=False):
-            if self.stop_running:
-                yield _("Converter is stoppping")
-                break
             for file in files:
-                if self.stop_running:
-                    break
                 self.file_counter += 1
                 if(round(self.file_counter % self.one_percent_files, 1) == 0.0):
                     msg = "%i / %i %s.\n" % (self.file_counter,
@@ -121,16 +117,14 @@ class Converter(object):
                 destination_dir = self.dest
                 if extension in known_extensions:
                     # Rotate the images first if deskew is true
-                    if self.stop_running:
-                        break
                     if self.deskew:
                         try:
                             self.images.append([source_path,
                                                "%s/%s" % (destination_dir, file)])
                         except (Exception, TesseractNotFoundError) as e:
-                            self.stop_running = True
                             msg = "%s: %s" % (_("Error occurred while opening image"), e)
                             yield msg
+                            break
                     else:
                         self.image_paths.append(source_path)
         yield _("Gathering done")
@@ -241,6 +235,8 @@ class Converter(object):
                                                 "%i.pdf" % self.counter)
                         first.save(name, "PDF", resolution=90.0, save_all=True,
                                    append_images=handle_list)
+                        msg = "%s: %s" % (_("PDF created"), name)
+                        yield msg
             else:
                 yield _("Creating a single pdf")
                 # Remove the first and store it in a variable
