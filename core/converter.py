@@ -16,6 +16,7 @@
 
 # import the necessary packages
 import os
+import time
 import sys
 import shutil
 import pickle
@@ -44,10 +45,8 @@ class Converter(object):
         # Resize is working but is not being passed neither by the cli or the gui
         self.resize = kwargs.get("resize", None)
         self.image_paths = []
-        self.images = []
         self.image_handles = None
         self.counter = 0
-        self.stop_running = False
         split, at = split
         self.split = split
         self.split_at = at
@@ -89,11 +88,14 @@ class Converter(object):
             if (self.file_number >= 600 and self.save_files) or (self.file_number >= 1000 and self.make_pdf):
                 yield _("Found too many files to handle, this is not implemented yet")
             else:
+                print("Gathering")
                 for line in self.gather_images():
                     yield line
-                if self.deskew:
-                    for line in self.deskew_images():
-                        yield line
+                print("Gathering done")
+                # if self.deskew:
+                #     for line in self.deskew_images():
+                #         yield line
+                print("making pdf")
                 if self.m_pdf:
                     for line in self.make_pdf():
                         yield line
@@ -116,38 +118,13 @@ class Converter(object):
                 source_path = os.path.join(root, file)
                 destination_dir = self.dest
                 if extension in known_extensions:
-                    # Rotate the images first if deskew is true
-                    if self.deskew:
-                        try:
-                            self.images.append([source_path,
-                                               "%s/%s" % (destination_dir, file)])
-                        except (Exception, TesseractNotFoundError) as e:
-                            msg = "%s: %s" % (_("Error occurred while opening image"), e)
-                            yield msg
-                            break
-                    else:
                         self.image_paths.append(source_path)
         yield _("Gathering done")
 
     # BUG: Some images get flipped sideways
     def deskew_images(self):
-        img_sets = [img_set for img_set in self.images]
-        sets_len = len(img_sets)
-        yield _("Deskewing images") + "\n"
-        one_percent = sets_len / 100
-        counter = 0
-        if sets_len > 0:
-            self.images = []
-            # set: [source_path, dest_path]
-            for img_set in img_sets:
-                counter += 1
-                if(round(counter % one_percent, 1) == 0.0):
-                    msg = "%i / %i %s.\n" % (counter,
-                                             sets_len,
-                                             _("deskewed"))
-                    yield msg
-                dest_path = img_set[1]
-                img = Image.open(img_set[0])
+        for img in self.image_paths:
+            with Image.open(img) as img:
                 try:
                     rotate = image_to_osd(img, output_type=Output.DICT)["rotate"]
                     # This tells it to use the
@@ -158,36 +135,22 @@ class Converter(object):
                     # what color the background will be filled with.
                     # https://stackoverflow.com/a/17822099
                     img = img.rotate(-rotate, resample=Image.BICUBIC, expand=True)
+                    # TODO: this needs to be rethinked
                     if self.save_files:
-                        self.image_paths.append(dest_path)
                         img.save(dest_path)
+                        self.image_paths.append(dest_path)
                     else:
                         self.images.append(img)
                 # sometimes an error can occur with tesseract reading the image
                 # maybe there is not enough text or dpi is not set
                 # this need to be handled
                 except Exception as e:
-                    msg = "%s: %s" % (_("And exception occured while deskewing image"), e)
+                    msg = "%s: %s" % (_("An exception occured while deskewing image"), e)
                     yield msg
-                    msg = "%s: %s" % (_("This image wont be processed"), img_set[1])
-                    self.image_paths.append(img_set[0])
+                    msg = "%s: %s" % (_("This image wont be processed"), dest_path)
+                    self.image_paths.append(img)
+                    yield msg
                     continue
-        else:
-            msg = _("Failed to obtain images to deskew")
-            yield msg
-
-    # gets all image handles
-    def check_handles(self):
-        image_handles = [Image.open(image) for image in self.image_paths]
-        PIL_handles = None
-        if len(self.images) > 0:
-            PIL_handles = [image for image in self.images]
-        if PIL_handles is not None:
-            image_handles += PIL_handles
-        if len(image_handles) == 0:
-            return False
-        else:
-            return image_handles
 
     # resizes the images based on a percentage
     def resize_images(self, image_handles):
@@ -209,43 +172,36 @@ class Converter(object):
     # Function to generate pdf's
     def make_pdf(self):
         # Get all image handles
-        image_handles = self.check_handles()
-        if self.resize is not None:
-            for line in self.resize_images(image_handles):
-                yield line
-        if image_handles is not False:
-            # now that we have the handles let's
-            # clean the class's stored handles to spare some memory
-            self.image_paths = []
-            self.images = []
-            if self.split:
-                sa = self.split_at
-                yield "%s: %i" % (_("Creating multiple PDFs splitting by"), sa)
-                if len(image_handles) > sa:
-                    # Mom's spaghetti ahead
-                    image_handles = [image_handles[i * sa:(i + 1) * sa] for i in range((len(image_handles) + sa - 1) // sa)]
-                    for handle_list in image_handles:
-                        first = handle_list[0]
-                        handle_list.pop(0)
-                        self.counter += 1
-                        name = os.path.join(self.dest, "%i.pdf" % self.counter)
-                        while os.path.isfile(name):
-                            self.counter += 1
-                            name = os.path.join(self.dest,
-                                                "%i.pdf" % self.counter)
-                        first.save(name, "PDF", resolution=90.0, save_all=True,
-                                   append_images=handle_list)
-                        msg = "%s: %s" % (_("PDF created"), name)
-                        yield msg
-            else:
-                yield _("Creating a single pdf")
-                # Remove the first and store it in a variable
-                first = image_handles[0]
-                image_handles.pop(0)
-                # Save the first image as pdf and append the others
-                name = os.path.join(self.dest, "%i.pdf" % self.counter)
-                while os.path.isfile(name):
+        print("obtaining handles")
+        print("handles obtained, proceeding to generating pdf")
+        if self.split:
+            sa = self.split_at
+            yield "%s: %i" % (_("Creating multiple PDFs splitting by"), sa)
+            if len(image_handles) > sa:
+                # Mom's spaghetti ahead
+                image_handles = [image_handles[i * sa:(i + 1) * sa] for i in range((len(image_handles) + sa - 1) // sa)]
+                for handle_list in image_handles:
+                    first = handle_list[0]
+                    handle_list.pop(0)
                     self.counter += 1
                     name = os.path.join(self.dest, "%i.pdf" % self.counter)
-                first.save(name, "PDF", resolution=90.0, save_all=True,
-                           append_images=image_handles)
+                    while os.path.isfile(name):
+                        self.counter += 1
+                        name = os.path.join(self.dest,
+                                            "%i.pdf" % self.counter)
+                    first.save(name, "PDF", resolution=90.0, save_all=True,
+                                append_images=handle_list)
+                    msg = "%s: %s" % (_("PDF created"), name)
+                    yield msg
+        else:
+            yield _("Creating a single pdf")
+            # Remove the first and store it in a variable
+            first = image_handles[0]
+            image_handles.pop(0)
+            # Save the first image as pdf and append the others
+            name = os.path.join(self.dest, "%i.pdf" % self.counter)
+            while os.path.isfile(name):
+                self.counter += 1
+                name = os.path.join(self.dest, "%i.pdf" % self.counter)
+            first.save(name, "PDF", resolution=90.0, save_all=True,
+                        append_images=image_handles)
