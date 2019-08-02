@@ -86,7 +86,7 @@ class Converter(object):
                 yield "%s %i %s" % (_("Found"),
                                     self.file_number,
                                     _("files to copy and deskew is true this might take a bit"))
-            if self.file_number >= 600 and self.save_files or self.file_number >= 1000 and self.make_pdf:
+            if (self.file_number >= 600 and self.save_files) or (self.file_number >= 1000 and self.make_pdf):
                 yield _("Found too many files to handle, this is not implemented yet")
             else:
                 for line in self.gather_images():
@@ -220,7 +220,7 @@ class Converter(object):
             self.images = []
             if self.split:
                 sa = self.split_at
-                yield "%s %i" % (_("Creating multiple PDFs splitting by:"), sa)
+                yield "%s: %i" % (_("Creating multiple PDFs splitting by"), sa)
                 if len(image_handles) > sa:
                     # Mom's spaghetti ahead
                     image_handles = [image_handles[i * sa:(i + 1) * sa] for i in range((len(image_handles) + sa - 1) // sa)]
