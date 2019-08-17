@@ -114,7 +114,8 @@ class STPDFCore:
     def print_progress_percent(self, action):
         """prints progress for the current action
 
-        str action: must be a translatable string, EX: _("gathered")
+        gettext str action: must be a translatable string
+            from gettext global function, EX: _("gathered")
         """
         if(round(self.file_counter % self.one_percent_files, 1) == 0.0):
             msg = "%i / %i %s.\n" % (self.file_counter,
@@ -135,9 +136,10 @@ class STPDFCore:
     # for gathering and processing the images
     # Steps should be:
     # 1 - Image gathering
-    # 2 - Image processing
-    # 3 - PDF generation
-    def process_all(self):
+    # 2 - Splitting the images into batches see issue #3
+    # 3 - Image processing
+    # 4 - PDF generation
+    def process_all(self, count):
         if not self.save_files and not self.m_pdf:
             yield _("Nothing to do, neither save files or make pdf is selected") + "\n"
         else:
@@ -151,6 +153,7 @@ class STPDFCore:
             else:
                 for line in self.gather_images():
                     yield line
+                
                 for line in self.process_images():
                     yield line
                 if self.m_pdf:
@@ -176,6 +179,49 @@ class STPDFCore:
         self.update_fileNumber_and_reset_counter()
         yield _("Gathering done") + "\n"
 
+    def process_images(self, image_paths):
+        yield _("Starting image processing") + "\n"
+        for img_p in image_paths:
+            self.file_counter += 1
+            print_progress = self.print_progress_percent(_("processed"))
+            if print_progress is not False:
+                yield print_progress
+            dest_p = os.path.join(self.dest, os.path.basename(img_p))
+            # Open the file in binary mode
+            print("opening image: %s" % img_p)
+            self.verify_image()
+            with open(img_p, "rb") as fp:
+                # Since img.verify() closes the image before loading the data
+                # img needs to be open and loaded again
+                with Image.open(fp) as f_img:
+                    f_img.load()
+                    img = f_img
+                    if self.resize:
+                        print("resizing image")
+                        img = self.resize_image(img)
+                    if self.deskew:
+                        print("deskewing image")
+                        try:
+                            img = self.deskew_image(img)
+                        except Exception as e:
+                            msg = "\n%s: %s\n" % (_("An exception occured while deskewing image"), e)
+                            self.logger.error(msg)
+                            yield msg
+                            msg = "\n%s: %s\n" % (_("This image wont be processed"), dest_path)
+                            self.logger.debug(msg)
+                            yield msg
+                    if self.save_files:
+                        print("saving image")
+                        # save the image
+                        # and replace the current path with the saved image path
+                        img.save(dest_p)
+                        image_paths[self.file_counter - 1] = dest_p
+                    else:
+                        print("appending image")
+                        self.processed_images.append(img)
+        self.update_fileNumber_and_reset_counter()
+        yield _("Processing done")
+
     def verify_image(self, img_p):
         with open(img_p, "rb") as fp:
             # read the file into Pil's Image.open method
@@ -184,68 +230,8 @@ class STPDFCore:
                 # Try to verify the file or skip it
                 try:
                     img.verify()
-                    print("verified")
                 except Exception as e:
-                    print("failed to verify", e)
-                    # remove from counter and paths since it can't be processed
-                    self.logger.error(e)
-                    self.file_counter -= 1
-                    self.image_paths.pop(self.file_counter)
-                    msg = "%s: %s\n%s" % (_("Failed to process image"),
-                                          _("Skipping"), img_p)
-                    return msg
-        return True
-
-    def process_images(self):
-        yield _("Starting image processing") + "\n"
-        for img_p in self.image_paths:
-            self.file_counter += 1
-            print_progress = self.print_progress_percent(_("processed"))
-            if print_progress is not False:
-                yield print_progress
-            dest_p = os.path.join(self.dest, os.path.basename(img_p))
-            # Open the file in binary mode
-            print("opening image: %s" % img_p)
-            try:
-                if self.verify_image(img_p):
-                    with open(img_p, "rb") as fp:
-                        # Since img.verify() closes the image before loading the data
-                        # img needs to be open and loaded again
-                        print("reading image again")
-                        with Image.open(fp) as f_img:
-                            try:
-                                print("loading image")
-                                f_img.load()
-                            except Exception as e:
-                                print("Failed to load", e)
-                            img = f_img
-                            if self.resize:
-                                print("resizing image")
-                                img = self.resize_image(img)
-                            if self.deskew:
-                                print("deskewing image")
-                                try:
-                                    img = self.deskew_image(img)
-                                except Exception as e:
-                                    print("failed to deskew", e)
-                                    self.logger.error(e)
-                                    msg = "\n%s: %s\n" % (_("An exception occured while deskewing image"), e)
-                                    yield msg
-                                    msg = "\n%s: %s\n" % (_("This image wont be processed"), dest_path)
-                                    yield msg
-                            if self.save_files:
-                                print("saving image")
-                                # save the image
-                                # and replace the current path with the saved image path
-                                img.save(dest_p)
-                                self.image_paths[self.file_counter - 1] = dest_p
-                            else:
-                                print("appending image")
-                                self.processed_images.append(img)
-            except Exception as e:
-                print(e)
-        self.update_fileNumber_and_reset_counter()
-        yield _("Processing done")
+                    raise e
 
     # resizes the image based on a percentage
     def resize_image(self, img):
@@ -302,9 +288,7 @@ class STPDFCore:
                     self.file_number = len(sets_list)
                     self.one_percent_files = self.file_number / 100
                     for handle_list in sets_list:
-                        print_progress = self.self.print_progress_percent(_("generated"))
-                        if print_progress is not False:
-                            yield print_progress
+                        yield _("Generating a pdf")
                         first = handle_list.pop(0)
                         self.file_counter += 1
                         name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
