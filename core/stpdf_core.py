@@ -31,12 +31,20 @@ import gettext
 
 from pytesseract.pytesseract import TesseractNotFoundError
 
+###########################################################
+#                                                         #
+#  STPDFCore(str source, str dest, **kwargs)              #
+#    Gathers all image paths and passes them onto         #
+#     STPDFConverter(list image_path, **kwargs)           #
+#                                                         #
+###########################################################
+
 
 class STPDFCore:
     """docstring for STPDFCore."""
 
-    def __init__(self, source, dest, split=(True, 1), *args, **kwargs):
-        super(STPDFCore, self).__init__()
+    def __init__(self, source, dest, **kwargs):
+        self.kwargs = kwargs
         self.source = source
         self.dest = dest
         self.deskew = kwargs.get("deskew", False)
@@ -44,16 +52,19 @@ class STPDFCore:
         self.installed_lang = kwargs.get("lang", "en")
         self.m_pdf = kwargs.get("make_pdf", True)
         self.save_files = kwargs.get("save_files", False)
+        self.log_level = kwargs.get("log_level", "info")
+        # TODO: switch to True
+        batch_process, batch_split = kwargs.get("batch_split", (False, 50))
+        self.batch_process = batch_process
+        self.batch_split = batch_split
+        split, at = kwargs.get("split", (False, 0))
+        self.split = split
+        self.split_at = at
         # Resize is working but is not being passed neither by the cli or the gui
         self.resize = kwargs.get("resize", False)
-        self.log_level = kwargs.get("log_level", "info")
-        self.log_levels = ["debug", "info", "warning", "error", "critical"]
         self.image_paths = []
         self.processed_images = []
         self.max_mem_usage = self.define_max_memory_usage_until_exception()
-        split, at = split
-        self.split = split
-        self.split_at = at
         self.file_number = 0
         self.file_counter = 0
         # Check how many files to copy
@@ -83,6 +94,11 @@ class STPDFCore:
     # see BUG in get_handles function
     def define_max_memory_usage_until_exception(self):
         mem_values = dict(psutil.virtual_memory()._asdict())
+        # i'm using available memory
+        # because some of it is cache and can be overwritten
+        # however to avoid system hangs i subtract shared memory
+        # if it has less digits than available else fallback
+        # to free memory that should be lower but still work
         avail_digits = int(math.log10(mem_values["available"]))
         shared_digits = int(math.log10(mem_values["shared"]))
         if shared_digits < avail_digits:
@@ -92,74 +108,48 @@ class STPDFCore:
 
     def set_up_logger(self):
         # disable PIL logger
-        # logging.getLogger("PIL").setLevel(logging.ERROR)
+        logging.getLogger("PIL").setLevel(logging.ERROR)
         # set up core logger
-        l_levels = self.log_levels
         l_level = self.log_level
-        n_level = None
-        if l_level not in l_levels:
+        n_level = getattr(logging, l_level.upper(), 20)
+        if n_level == 20 and l_level.upper() != "INFO":
             sys.stdout.write("%s: %s\n" % (_("Invalid log level"), l_level))
-            l_level = "info"
-            n_level = getattr(logging, l_level.upper(), 10)
-        else:
-            n_level = getattr(logging, l_level.upper(), 10)
         # Console logger
-        log_format = "%(name)s - %(levelname)s: %(message)s"
-        logging.basicConfig(format=log_format, level=n_level)
-        self.logger = logging.getLogger("STPDF-Core")
+        formatter = logging.Formatter("%(name)s - %(levelname)s: %(message)s")
+        self.logger = logging.getLogger("STPDF.Core")
+        self.logger.setLevel(n_level)
+        ch = logging.StreamHandler()
+        ch.setFormatter(formatter)
+        ch.setLevel(n_level)
+        self.logger.addHandler(ch)
         msg = "%s: %s" % (_("Console logger is set with log level"), l_level)
         self.logger.info(msg)
 
-    # returns progress string
-    def print_progress_percent(self, action):
-        """prints progress for the current action
-
-        gettext str action: must be a translatable string
-            from gettext global function, EX: _("gathered")
-        """
-        if(round(self.file_counter % self.one_percent_files, 1) == 0.0):
-            msg = "%i / %i %s.\n" % (self.file_counter,
-                                     self.file_number,
-                                     action)
-            self.logger.info(msg)
-            return msg
-        else:
-            return False
-
-    # Update file number and reset counter
-    def update_fileNumber_and_reset_counter(self):
-        self.file_number = self.file_counter
-        self.one_percent_files = self.file_number / 100
-        self.file_counter = 0
-
-    # calls all the required functions
-    # for gathering and processing the images
-    # Steps should be:
-    # 1 - Image gathering
-    # 2 - Splitting the images into batches see issue #3
-    # 3 - Image processing
-    # 4 - PDF generation
-    def process_all(self, count):
+    def process_all(self):
         if not self.save_files and not self.m_pdf:
             yield _("Nothing to do, neither save files or make pdf is selected") + "\n"
         else:
-            if self.file_number >= 200 and self.deskew:
+            if self.file_number >= 100 and self.deskew:
                 yield "%s %i %s\n" % (_("Found"),
                                       self.file_number,
                                       _("files to copy and deskew this might take a bit"))
-            if (self.file_number >= 300 and self.save_files) or (self.file_number >= 500 and self.make_pdf and not self.save_files):
+            if self.file_number >= 250 and self.save_files is False:
                 msg = _("Found too many files to handle, this is not implemented yet")
                 raise NotImplementedError(msg)
             else:
                 for line in self.gather_images():
                     yield line
-                
-                for line in self.process_images():
-                    yield line
-                if self.m_pdf:
-                    for line in self.make_pdf():
-                        yield line
-                yield _("Converter finished")
+                if self.batch_process is False:
+                    self.converter = STPDFConverter(self.image_paths, **self.kwargs)
+                    yield "0"
+                    # for line in self.converter.process_images():
+                    #     yield line
+                else:
+                    sa = self.batch_split
+                    sets_list = [self.image_paths[i * sa:(i + 1) * sa] for i in range((len(self.image_paths) + sa - 1) // sa)]
+                    print(sets_list)
+                    yield "0"
+                yield _("Finished")
 
     # Gathers all the paths of images with known extensions
     def gather_images(self):
@@ -169,19 +159,76 @@ class STPDFCore:
         for root, __, files in os.walk(self.source, topdown=False):
             for file in files:
                 self.file_counter += 1
-                print_progress = self.print_progress_percent(_("gathered"))
-                if print_progress is not False:
-                    yield print_progress
+                if(round(self.file_counter % self.one_percent_files, 1) == 0.0):
+                    msg = "%i / %i %s.\n" % (self.file_counter,
+                                             self.file_number,
+                                             _("gathered"))
+                    self.logger.debug(msg)
+                    yield msg
                 extension = os.path.splitext(file)[1][1:].upper()
                 source_path = os.path.join(root, file)
                 if extension in known_extensions:
                         self.image_paths.append(source_path)
-        self.update_fileNumber_and_reset_counter()
+        self.file_number = self.file_counter
+        self.one_percent_files = self.file_number / 100
+        self.file_counter = 0
         yield _("Gathering done") + "\n"
 
-    def process_images(self, image_paths):
+###########################################################
+#                                                         #
+#  STPDFConverter(list image_paths, **kwargs)             #
+#    Processes the images provided in the list, inherits  #
+#     kwargs from STPDFCore                               #
+#                                                         #
+###########################################################
+
+
+class STPDFConverter:
+
+    def __init__(self, image_paths, **kwargs):
+        self.image_paths = image_paths
+        self.deskew = kwargs.get("deskew", False)
+        self.resolution = kwargs.get("resolution", 90.0)
+        self.installed_lang = kwargs.get("lang", "en")
+        self.m_pdf = kwargs.get("make_pdf", True)
+        self.save_files = kwargs.get("save_files", False)
+        self.log_level = kwargs.get("log_level", "info")
+        self.file_number = len(image_paths)
+        self.one_percent_files = self.file_number / 100
+        self.file_counter = 0
+        self.set_up_logger()
+
+    # set up converter logger
+    def set_up_logger(self):
+        l_level = self.log_level
+        n_level = getattr(logging, l_level.upper(), 20)
+        if n_level == 20 and l_level.upper() != "INFO":
+            sys.stdout.write("%s: %s\n" % (_("Invalid log level"), l_level))
+        # Console logger
+        formatter = logging.Formatter("%(name)s - %(levelname)s: %(message)s")
+        self.logger = logging.getLogger("STPDF.Core.Converter")
+        self.logger.setLevel(n_level)
+        ch = logging.StreamHandler()
+        ch.setFormatter(formatter)
+        ch.setLevel(n_level)
+        self.logger.addHandler(ch)
+        msg = "%s: %s" % (_("Console logger is set with log level"), l_level)
+        self.logger.debug(msg)
+
+    # returns progress string
+    def print_progress_percent(self, action):
+        if(round(self.file_counter % self.one_percent_files, 1) == 0.0):
+            msg = "%i / %i %s.\n" % (self.file_counter,
+                                     self.file_number,
+                                     action)
+            self.logger.info(msg)
+            return msg
+        else:
+            return False
+
+    def process_images(self):
         yield _("Starting image processing") + "\n"
-        for img_p in image_paths:
+        for img_p in self.image_paths:
             self.file_counter += 1
             print_progress = self.print_progress_percent(_("processed"))
             if print_progress is not False:
@@ -189,7 +236,7 @@ class STPDFCore:
             dest_p = os.path.join(self.dest, os.path.basename(img_p))
             # Open the file in binary mode
             print("opening image: %s" % img_p)
-            self.verify_image()
+            self.verify_image(img_p)
             with open(img_p, "rb") as fp:
                 # Since img.verify() closes the image before loading the data
                 # img needs to be open and loaded again
@@ -215,7 +262,7 @@ class STPDFCore:
                         # save the image
                         # and replace the current path with the saved image path
                         img.save(dest_p)
-                        image_paths[self.file_counter - 1] = dest_p
+                        self.image_paths[self.file_counter - 1] = dest_p
                     else:
                         print("appending image")
                         self.processed_images.append(img)
