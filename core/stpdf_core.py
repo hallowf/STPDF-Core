@@ -34,8 +34,9 @@ from pytesseract.pytesseract import TesseractNotFoundError
 ###########################################################
 #                                                         #
 #  STPDFCore(str source, str dest, **kwargs)              #
-#    Gathers all image paths and passes them onto         #
-#     STPDFConverter(list image_path, **kwargs)           #
+#   - Verifies the paths and optional arguments provided  #
+#   - Gathers all image paths and passes them onto        #
+#       STPDFConverter(list image_path, **kwargs)         #
 #                                                         #
 ###########################################################
 
@@ -48,11 +49,12 @@ class STPDFCore:
         self.source = source
         self.dest = dest
         self.deskew = kwargs.get("deskew", False)
-        self.resolution = kwargs.get("resolution", 90.0)
         self.installed_lang = kwargs.get("lang", "en")
-        self.m_pdf = kwargs.get("make_pdf", True)
+        self.make_pdf = kwargs.get("make_pdf", True)
         self.save_files = kwargs.get("save_files", False)
         self.log_level = kwargs.get("log_level", "info")
+        self.loading_process = kwargs.get("loading_process", "lazy")
+        self.resize = kwargs.get("resize", 0)
         # TODO: switch to True
         batch_process, batch_split = kwargs.get("batch_split", (False, 50))
         self.batch_process = batch_process
@@ -61,10 +63,10 @@ class STPDFCore:
         self.split = split
         self.split_at = at
         # Resize is working but is not being passed neither by the cli or the gui
-        self.resize = kwargs.get("resize", False)
         self.image_paths = []
-        self.processed_images = []
+        self.msg_queue = []
         self.max_mem_usage = self.define_max_memory_usage_until_exception()
+        self.proc = psutil.Process(os.getpid())
         self.file_number = 0
         self.file_counter = 0
         # Check how many files to copy
@@ -91,7 +93,6 @@ class STPDFCore:
     # it is a failsafe mechanism for the users who try to
     # forcibly process more files at the same time
     # regardlessly of the system's specs
-    # see BUG in get_handles function
     def define_max_memory_usage_until_exception(self):
         mem_values = dict(psutil.virtual_memory()._asdict())
         # i'm using available memory
@@ -108,8 +109,9 @@ class STPDFCore:
 
     # sets up console logger, independent of the GUI/CLI
     def set_up_logger(self):
+        print("setting up core logger")
         # switch PIL logger to errors only
-        logging.getLogger("PIL").setLevel(logging.ERROR)
+        # logging.getLogger("PIL").setLevel(logging.ERROR)
         # set up core logger
         l_level = self.log_level
         n_level = getattr(logging, l_level.upper(), 20)
@@ -123,32 +125,8 @@ class STPDFCore:
         ch.setFormatter(formatter)
         ch.setLevel(n_level)
         self.logger.addHandler(ch)
-        msg = "%s: %s" % (_("Console logger is set with log level"), l_level)
+        msg = "%s: %s" % (_("Core logger is set with log level"), l_level)
         self.logger.info(msg)
-
-    def run_converter(self):
-        if not self.save_files and not self.m_pdf:
-            yield _("Nothing to do, neither save files or make pdf is selected") + "\n"
-        else:
-            if self.file_number >= 100 and self.deskew:
-                yield "%s %i %s\n" % (_("Found"),
-                                      self.file_number,
-                                      _("files to copy and deskew this might take a bit"))
-            if self.file_number >= 250 and self.save_files is False:
-                msg = _("Found too many files to handle, this is not implemented yet")
-                raise NotImplementedError(msg)
-            else:
-                for line in self.gather_images():
-                    yield line
-                if self.batch_process is False:
-                    self.converter = STPDFConverter(self.image_paths, **self.kwargs)
-                    yield "0"
-                else:
-                    sa = self.batch_split
-                    sets_list = [self.image_paths[i * sa:(i + 1) * sa] for i in range((len(self.image_paths) + sa - 1) // sa)]
-                    print(sets_list)
-                    yield "0"
-                yield _("Finished")
 
     # Gathers all the paths of images with known extensions
     def gather_images(self):
@@ -173,25 +151,64 @@ class STPDFCore:
         self.file_counter = 0
         yield _("Gathering done") + "\n"
 
+    def run_converter(self):
+        if not self.save_files and not self.make_pdf:
+            yield _("Nothing to do, neither save files or make pdf is selected") + "\n"
+        else:
+            for line in self.gather_images():
+                yield line
+            if self.batch_process is False:
+                print("batch_process is False")
+                converter = STPDFConverter(self.image_paths, self.dest, **self.kwargs)
+                print("converter set to",converter)
+                if self.loading_process == "eager":
+                    print("loading is eager")
+                    for line in converter.process_images_eager():
+                        if self.proc.memory_info().rss >= self.max_mem_usage:
+                            raise MemoryError("Exceeding %i bytes limit" % self.max_mem_usage)
+                        yield line
+                else:
+                    print("loading is lazy")
+                    try:
+                        print
+                        for img in converter.process_images_lazy():
+                            print("img", img)
+                    except Exception as e:
+                        print(e)
+                        yield e
+                    
+            else:
+                print("batch_process is True")
+                sa = self.batch_split
+                sets_list = [self.image_paths[i * sa:(i + 1) * sa] for i in range((len(self.image_paths) + sa - 1) // sa)]
+                print(sets_list)
+                yield "0"
+            yield _("Finished")
+
+
 ###########################################################
 #                                                         #
 #  STPDFConverter(list image_paths, **kwargs)             #
-#    Processes the images provided in the list, inherits  #
-#     kwargs from STPDFCore                               #
+#   - Processes the images provided in the list, inherits #
+#      kwargs from STPDFCore                              #
+#   - Does not verify if the provided optional kwargs are #
+#      invalid, that is the responsibility of the caller  #
 #                                                         #
 ###########################################################
 
 
 class STPDFConverter:
 
-    def __init__(self, image_paths, **kwargs):
+    def __init__(self, image_paths, dest, **kwargs):
         self.image_paths = image_paths
+        self.dest = dest
         self.deskew = kwargs.get("deskew", False)
         self.resolution = kwargs.get("resolution", 90.0)
         self.installed_lang = kwargs.get("lang", "en")
-        self.m_pdf = kwargs.get("make_pdf", True)
+        self.make_pdf = kwargs.get("make_pdf", True)
         self.save_files = kwargs.get("save_files", False)
         self.log_level = kwargs.get("log_level", "info")
+        self.resize = kwargs.get("resize", 0)
         self.file_number = len(image_paths)
         self.one_percent_files = self.file_number / 100
         self.file_counter = 0
@@ -213,11 +230,11 @@ class STPDFConverter:
         ch.setFormatter(formatter)
         ch.setLevel(n_level)
         self.logger.addHandler(ch)
-        msg = "%s: %s" % (_("Console logger is set with log level"), l_level)
+        msg = "%s: %s" % (_("Converter logger is set with log level"), l_level)
         self.logger.debug(msg)
 
     # returns progress string
-    def print_progress_percent(self, action):
+    def yield_progress_status(self, action):
         if(round(self.file_counter % self.one_percent_files, 1) == 0.0):
             msg = "%i / %i %s.\n" % (self.file_counter,
                                      self.file_number,
@@ -234,53 +251,127 @@ class STPDFConverter:
             msg = "%s: %s" % (action, ref_object)
         self.logger.debug(msg)
 
-    def process_images(self):
+    # Processes the images directly into memory
+    # and creates a pdf out of them
+    def process_images_eager(self):
         yield _("Starting image processing") + "\n"
+        images = []
         for img_p in self.image_paths:
             self.file_counter += 1
-            print_progress = self.print_progress_percent(_("processed"))
+            print_progress = self.yield_progress_status(_("processed"))
             if print_progress is not False:
                 yield print_progress
             dest_p = os.path.join(self.dest, os.path.basename(img_p))
-        yield _("Processing done") + "\n"
-
-    def process_image(self, img):
-        dest_p = os.path.join(self.dest, os.path.basename(img))
-        if self.deskew:
-            try:
-                img = self.deskew_image(img)
-            except expression as identifier:
-                pass
-        if self.resize:
-            img = self.resize_image(img)
-        if self.save_files:
-            img.save(dest_p)
-
-    def processed_images_generator(self):
-        for img_p in self.image_paths:
             try:
                 self.verify_image(img_p)
             except Exception as e:
-                self.logger.error(e)
                 self.log_action_msg(_("Failed to verify image"), img_p)
                 self.log_action_msg(_("Skipping image"))
                 continue
-            self.file_counter += 1
-            print_progress = self.print_progress_percent(_("processed"))
-            if print_progress is not False:
-                yield print_progress
             img = self.process_image(img_p)
+            images.append(img)
+        first_img = images.pop(0)
+        name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
+        while os.path.isfile(name):
+            self.file_counter += 1
+            name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
+        first_img.save(name, "PDF", resolution=self.resolution, save_all=True,
+                       append_images=images)
+        yield _("Processing done") + "\n"
 
+    # "lazy-loads" the images, if make_pdf is True
+    # then it uses the image generator to append the images one by one
+    # else just iterates trough the generator.
+    # msg_queue is a list provided by caller to be passed onto the generator,
+    # the caller should "use" the message and pop it from the list
+    def process_images_lazy(self):
+        # msg = _("Starting image processing") + "\n"
+        # msg_queue.append(msg)
+        # Check if images are to be put onto a pdf or just processed,
+        # it does not check save_files value, responsibility of the caller....
+        if self.make_pdf:
+            first_img = self.process_image(self.image_paths.pop(0))
+            name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
+            while os.path.isfile(name):
+                self.file_counter += 1
+                name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
+            first_img.save(name, "PDF", resolution=self.resolution, save_all=True,
+                           append_images=self.processed_images_generator())
+        else:
+            # we don't really care about the images here
+            # since they are already processed and make_pdf is false
+            for img in self.processed_images_generator():
+                yield img
+        # msg = _("Processing done") + "\n"
+        # msg_queue.append(msg)
+
+    # A generator for "lazy-loading" the images
+    # instead of trying to load them all at once
+    def processed_images_generator(self):
+        print("generating processed image")
+        for img_p in self.image_paths:
+            # print_progress = self.yield_progress_status(_("processed"))
+            # if print_progress is not False:
+            #     msg_queue.append(print_progress)
+            # Verify the image before trying to process it
+            # on exception skip image
+            try:
+                print("verifying image")
+                verified = self.verify_image(img_p)
+                if verified is True:
+                    yield self.process_image(img_p)
+                else:
+                    raise verified
+            except Exception as e:
+                self.log_action_msg(_("Failed to verify image"), img_p)
+                self.log_action_msg(_("Skipping image"))
+                continue
+
+    # Reads image in binary data passes data onto
+    # Image.open() and processes image trough all the available methods
+    # returns processed image
+    def process_image(self, img_path):
+        dest_p = os.path.join(self.dest, os.path.basename(img_path))
+        print("process_image(): reading image")
+        with open(img_path, "rb") as fp:
+            with Image.open(fp) as img:
+                print("loading image")
+                img.load()
+                # if there is no processing to be done just return the loaded img
+                if not (self.deskew or self.resize or self.save_files):
+                    print("returning image", img)
+                    return img
+                if self.deskew:
+                    try:
+                        d_img = self.deskew_image(img)
+                        img = d_img
+                    except Exception as e:
+                        self.log_action_msg(_("Failed to deskew image"), img)
+                        pass
+                if self.resize:
+                    img = self.resize_image(img)
+                if self.save_files:
+                    img.save(dest_p)
+                print("returning image", img)                
+                return img
+
+    # Tries to verify the images using PILLOW's image.verify()
+    # returns any exception occured, image should be skipped if
+    # failed to verify, the caller is responsible for that
     def verify_image(self, img_p):
+        print("verify_image(): reading image for verification", img_p)
         with open(img_p, "rb") as fp:
             self.log_action_msg(_("Verifying image"), img_p)
             # read the file into Pil's Image.open method
+            print("verify_image(): reading image with PIL")
             with Image.open(fp) as img:
+                print("trying to verify")
                 # Try to verify the file or skip it
                 try:
                     img.verify()
+                    return True
                 except Exception as e:
-                    raise e
+                    return e
 
     # resizes the image based on a percentage
     def resize_image(self, img):
@@ -289,6 +380,7 @@ class STPDFConverter:
         img.thumbnail(size, Image.ANTIALIAS)
         return img
 
+    # Deskews *(Fixes alignment) of image using tesseract-OCR
     # BUG: Some images get flipped sideways
     def deskew_image(self, img):
         self.log_action_msg(_("Deskewing image"), img)
@@ -309,50 +401,3 @@ class STPDFConverter:
             self.logger.error(e)
             raise e
         return img
-
-    # Function to generate pdf's
-    def make_pdf(self):
-        if self.split:
-            sa = self.split_at
-            yield "%s: %i\n" % (_("Creating multiple PDFs splitting by"), sa)
-            if len(image_handles) > sa:
-                # Mom's spaghetti ahead
-                sets_list = [image_handles[i * sa:(i + 1) * sa] for i in range((len(image_handles) + sa - 1) // sa)]
-                image_handles = None
-                self.file_number = len(sets_list)
-                self.one_percent_files = self.file_number / 100
-                for handle_list in sets_list:
-                    yield _("Generating a pdf")
-                    first = handle_list.pop(0)
-                    self.file_counter += 1
-                    name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
-                    while os.path.isfile(name):
-                        self.file_counter += 1
-                        name = os.path.join(self.dest,
-                                            "%i.pdf" % self.file_counter)
-                    try:
-                        first.save(name, "PDF", resolution=90.0, save_all=True,
-                                   append_images=handle_list)
-                        msg = "%s: %s" % (_("PDF created"), name)
-                        yield msg
-                    except Exception as e:
-                        self.logger.critical(e)
-                        msg = "%s: %s\n%s" % (_("Failed to create pdf:"),
-                                              e, _("skipping to the next one"))
-                        yield msg
-                    sets_list.pop(self.file_counter)
-        else:
-            yield _("Creating a single pdf") + "\n"
-            # Remove the first image and store it in a variable
-            first = image_handles.pop(0)
-            # Save the first image as pdf and append the others
-            name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
-            while os.path.isfile(name):
-                self.file_counter += 1
-                name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
-            try:
-                first.save(name, "PDF", resolution=90.0, save_all=True,
-                           append_images=image_handles)
-            except Exception as e:
-                msg = "%s: %s" % (_("Failed to create pdf:"), e)
-                self.logger.critical(e)
