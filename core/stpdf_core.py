@@ -109,7 +109,6 @@ class STPDFCore:
 
     # sets up console logger, independent of the GUI/CLI
     def set_up_logger(self):
-        print("setting up core logger")
         # switch PIL logger to errors only
         # logging.getLogger("PIL").setLevel(logging.ERROR)
         # set up core logger
@@ -158,9 +157,7 @@ class STPDFCore:
             for line in self.gather_images():
                 yield line
             if self.batch_process is False:
-                print("batch_process is False")
                 converter = STPDFConverter(self.image_paths, self.dest, **self.kwargs)
-                print("converter set to",converter)
                 if self.loading_process == "eager":
                     print("loading is eager")
                     for line in converter.process_images_eager():
@@ -170,18 +167,12 @@ class STPDFCore:
                 else:
                     print("loading is lazy")
                     try:
-                        print
-                        for img in converter.process_images_lazy():
-                            print("img", img)
+                        converter.process_images_lazy()
                     except Exception as e:
-                        print(e)
                         yield e
-                    
             else:
-                print("batch_process is True")
                 sa = self.batch_split
                 sets_list = [self.image_paths[i * sa:(i + 1) * sa] for i in range((len(self.image_paths) + sa - 1) // sa)]
-                print(sets_list)
                 yield "0"
             yield _("Finished")
 
@@ -268,8 +259,9 @@ class STPDFConverter:
                 self.log_action_msg(_("Failed to verify image"), img_p)
                 self.log_action_msg(_("Skipping image"))
                 continue
-            img = self.process_image(img_p)
-            images.append(img)
+            with open(img_p, "rb") as fp:
+                    with Image.open(fp) as img:
+                        images.append(self.process_image(img, img_p))
         first_img = images.pop(0)
         name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
         while os.path.isfile(name):
@@ -285,12 +277,28 @@ class STPDFConverter:
     # msg_queue is a list provided by caller to be passed onto the generator,
     # the caller should "use" the message and pop it from the list
     def process_images_lazy(self):
+
+        def acquire_first_image(paths):
+            for img_p in paths:
+                with open(img_p, "rb") as fp:
+                    with Image.open(fp) as img:
+                        try:
+                            img.verify()
+                        except Exception as e:
+                            continue
+                with open(img_p, "rb") as fp:
+                    with Image.open(fp) as img:
+                        img.load()
+                        return [img, img_p]
+
         # msg = _("Starting image processing") + "\n"
         # msg_queue.append(msg)
         # Check if images are to be put onto a pdf or just processed,
         # it does not check save_files value, responsibility of the caller....
         if self.make_pdf:
-            first_img = self.process_image(self.image_paths.pop(0))
+            first_img, img_p = acquire_first_image(self.image_paths)
+            first_img = self.process_image(first_img, img_p)
+            print("process_images_lazy(): first_img", first_img)
             name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
             while os.path.isfile(name):
                 self.file_counter += 1
@@ -301,14 +309,14 @@ class STPDFConverter:
             # we don't really care about the images here
             # since they are already processed and make_pdf is false
             for img in self.processed_images_generator():
-                yield img
+                pass
         # msg = _("Processing done") + "\n"
         # msg_queue.append(msg)
 
     # A generator for "lazy-loading" the images
     # instead of trying to load them all at once
     def processed_images_generator(self):
-        print("generating processed image")
+        print("processed_images_generator()")
         for img_p in self.image_paths:
             # print_progress = self.yield_progress_status(_("processed"))
             # if print_progress is not False:
@@ -316,12 +324,13 @@ class STPDFConverter:
             # Verify the image before trying to process it
             # on exception skip image
             try:
-                print("verifying image")
-                verified = self.verify_image(img_p)
-                if verified is True:
-                    yield self.process_image(img_p)
-                else:
-                    raise verified
+                with open(img_p, "rb") as fp:
+                    with Image.open(fp) as img:
+                        print("processed_images_generator(): verifying image")
+                        try:
+                            yield self.process_image(img, img_p)
+                        except expression as identifier:
+                            pass
             except Exception as e:
                 self.log_action_msg(_("Failed to verify image"), img_p)
                 self.log_action_msg(_("Skipping image"))
@@ -330,48 +339,39 @@ class STPDFConverter:
     # Reads image in binary data passes data onto
     # Image.open() and processes image trough all the available methods
     # returns processed image
-    def process_image(self, img_path):
+    def process_image(self, img, img_path):
         dest_p = os.path.join(self.dest, os.path.basename(img_path))
-        print("process_image(): reading image")
-        with open(img_path, "rb") as fp:
-            with Image.open(fp) as img:
-                print("loading image")
-                img.load()
-                # if there is no processing to be done just return the loaded img
-                if not (self.deskew or self.resize or self.save_files):
-                    print("returning image", img)
-                    return img
-                if self.deskew:
-                    try:
-                        d_img = self.deskew_image(img)
-                        img = d_img
-                    except Exception as e:
-                        self.log_action_msg(_("Failed to deskew image"), img)
-                        pass
-                if self.resize:
-                    img = self.resize_image(img)
-                if self.save_files:
-                    img.save(dest_p)
-                print("returning image", img)                
-                return img
+        # if there is no processing to be done just return the loaded img
+        if not (self.deskew or self.resize or self.save_files):
+            print("process_image(): returning image", img)
+            return img
+        if self.deskew:
+            try:
+                d_img = self.deskew_image(img)
+                img = d_img
+            except Exception as e:
+                self.log_action_msg(_("Failed to deskew image"), img)
+                pass
+        if self.resize:
+            img = self.resize_image(img)
+        if self.save_files:
+            img.save(dest_p)
+        print("process_image(): returning image", img)                
+        return img
 
     # Tries to verify the images using PILLOW's image.verify()
     # returns any exception occured, image should be skipped if
     # failed to verify, the caller is responsible for that
-    def verify_image(self, img_p):
-        print("verify_image(): reading image for verification", img_p)
-        with open(img_p, "rb") as fp:
-            self.log_action_msg(_("Verifying image"), img_p)
-            # read the file into Pil's Image.open method
-            print("verify_image(): reading image with PIL")
-            with Image.open(fp) as img:
-                print("trying to verify")
-                # Try to verify the file or skip it
-                try:
-                    img.verify()
-                    return True
-                except Exception as e:
-                    return e
+    def verify_image(self, img):
+        print("verify_image(): reading image for verification", img)
+        # Try to verify the file or skip it
+        try:
+            img.verify()
+            print("verify_image(): image verified")
+            return True
+        except Exception as e:
+            print("verify_image(): failed to verify image",e)
+            return e
 
     # resizes the image based on a percentage
     def resize_image(self, img):
