@@ -261,6 +261,7 @@ class STPDFConverter:
                 continue
             with open(img_p, "rb") as fp:
                     with Image.open(fp) as img:
+                        img.load()
                         images.append(self.process_image(img, img_p))
         first_img = images.pop(0)
         name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
@@ -278,33 +279,33 @@ class STPDFConverter:
     # the caller should "use" the message and pop it from the list
     def process_images_lazy(self):
 
-        def acquire_first_image(paths):
-            for img_p in paths:
-                with open(img_p, "rb") as fp:
-                    with Image.open(fp) as img:
-                        try:
-                            img.verify()
-                        except Exception as e:
-                            continue
-                with open(img_p, "rb") as fp:
-                    with Image.open(fp) as img:
-                        img.load()
-                        return [img, img_p]
+        def acquire_first_image(img_p):
+            with open(img_p, "rb") as fp:
+                with Image.open(fp) as img:
+                    try:
+                        img.verify()
+                    except Exception as e:
+                        raise e
+            with open(img_p, "rb") as fp:
+                with Image.open(fp) as img:
+                    img.load()
+                    return [img, img_p]
 
         # msg = _("Starting image processing") + "\n"
         # msg_queue.append(msg)
         # Check if images are to be put onto a pdf or just processed,
         # it does not check save_files value, responsibility of the caller....
         if self.make_pdf:
-            first_img, img_p = acquire_first_image(self.image_paths)
+            first_img, img_p = acquire_first_image(self.image_paths.pop(0))
             first_img = self.process_image(first_img, img_p)
-            print("process_images_lazy(): first_img", first_img)
+            gen = self.processed_images_generator()
             name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
             while os.path.isfile(name):
                 self.file_counter += 1
                 name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
+            print("making pdf")
             first_img.save(name, "PDF", resolution=self.resolution, save_all=True,
-                           append_images=self.processed_images_generator())
+                           append_images=gen)
         else:
             # we don't really care about the images here
             # since they are already processed and make_pdf is false
@@ -326,15 +327,25 @@ class STPDFConverter:
             try:
                 with open(img_p, "rb") as fp:
                     with Image.open(fp) as img:
-                        print("processed_images_generator(): verifying image")
                         try:
-                            yield self.process_image(img, img_p)
-                        except expression as identifier:
-                            pass
+                            time.sleep(1)
+                            self.verify_image(img)
+                        except Exception as e:
+                            print("processed_images_generator(): failed to verify image",e)
+                    with Image.open(fp) as img:
+                        time.sleep(1)
+                        img.load()
+                        try:
+                            img = self.process_image(img, img_p)
+                            print("processed_images_generator(): yielding image",img)
+                            yield img
+                        except Exception as e:
+                            print("processed_images_generator(): failed to process image",e)
             except Exception as e:
                 self.log_action_msg(_("Failed to verify image"), img_p)
                 self.log_action_msg(_("Skipping image"))
                 continue
+            time.sleep(1)
 
     # Reads image in binary data passes data onto
     # Image.open() and processes image trough all the available methods
@@ -343,12 +354,10 @@ class STPDFConverter:
         dest_p = os.path.join(self.dest, os.path.basename(img_path))
         # if there is no processing to be done just return the loaded img
         if not (self.deskew or self.resize or self.save_files):
-            print("process_image(): returning image", img)
             return img
         if self.deskew:
             try:
-                d_img = self.deskew_image(img)
-                img = d_img
+                img = self.deskew_image(img)
             except Exception as e:
                 self.log_action_msg(_("Failed to deskew image"), img)
                 pass
@@ -356,7 +365,6 @@ class STPDFConverter:
             img = self.resize_image(img)
         if self.save_files:
             img.save(dest_p)
-        print("process_image(): returning image", img)                
         return img
 
     # Tries to verify the images using PILLOW's image.verify()
@@ -368,9 +376,8 @@ class STPDFConverter:
         try:
             img.verify()
             print("verify_image(): image verified")
-            return True
         except Exception as e:
-            print("verify_image(): failed to verify image",e)
+            print("verify_image(): failed to verify image", e)
             return e
 
     # resizes the image based on a percentage
