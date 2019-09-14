@@ -328,12 +328,10 @@ class STPDFConverter:
                 with open(img_p, "rb") as fp:
                     with Image.open(fp) as img:
                         try:
-                            time.sleep(1)
                             self.verify_image(img)
                         except Exception as e:
                             print("processed_images_generator(): failed to verify image",e)
                     with Image.open(fp) as img:
-                        time.sleep(1)
                         img.load()
                         try:
                             img = self.process_image(img, img_p)
