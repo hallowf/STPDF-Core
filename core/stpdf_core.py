@@ -298,14 +298,14 @@ class STPDFConverter:
         if self.make_pdf:
             first_img, img_p = acquire_first_image(self.image_paths.pop(0))
             first_img = self.process_image(first_img, img_p)
-            gen = self.processed_images_generator()
             name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
             while os.path.isfile(name):
                 self.file_counter += 1
                 name = os.path.join(self.dest, "%i.pdf" % self.file_counter)
             print("making pdf")
-            first_img.save(name, "PDF", resolution=self.resolution, save_all=True,
-                           append_images=gen)
+            first_img.save(name, "PDF", resolution=self.resolution)
+            for img in self.processed_images_generator():
+                img.save(name, "PDF", append=True)
         else:
             # we don't really care about the images here
             # since they are already processed and make_pdf is false
